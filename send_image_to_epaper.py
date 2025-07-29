@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-ESP32 E6 E-Paper Image Sender with Fast Dithering
-Enhanced version that uses PIL's optimized dithering for better image quality
+ESP32 E6 E-Paper Image Sender with WORKING Quality Dithering
+Fixed version that actually completes without hanging
 """
 
 import os
@@ -11,7 +11,6 @@ import json
 from PIL import Image, ImageOps
 import time
 import argparse
-import numpy as np
 
 # Default configuration
 DEFAULT_ESP32_IP = "10.168.1.166"
@@ -226,65 +225,112 @@ class EPaperImageSender:
         return quantized
 
     def floyd_steinberg_dither(self, img, palette, debug=False):
-        """Custom Floyd-Steinberg implementation - slower but more control"""
-        print("   🎨 Applying custom Floyd-Steinberg dithering...")
+        """Working Floyd-Steinberg implementation - FIXED VERSION"""
+        print("   🎨 Applying Floyd-Steinberg dithering (working version)...")
         
         width, height = img.size
-        img_array = np.array(img, dtype=np.float64)
-        palette_colors = np.array([rgb for _, rgb in palette])
-        palette_codes = [code for code, _ in palette]
+        print(f"      Processing {width}x{height} = {width*height} pixels...")
         
-        result_array = np.zeros((height, width, 3), dtype=np.uint8)
+        # Use PIL pixel access for reliability
+        pixels = img.load()
+        result = Image.new('RGB', (width, height))
+        result_pixels = result.load()
+        
+        # Create working copy as simple list of lists
+        working_data = []
+        for y in range(height):
+            row = []
+            for x in range(width):
+                r, g, b = pixels[x, y]
+                row.append([float(r), float(g), float(b)])
+            working_data.append(row)
+        
         color_counts = {color_code: 0 for color_code, _ in palette}
-        
-        print(f"      Processing {width}x{height} pixels...")
+        start_time = time.time()
+        processed = 0
         
         for y in range(height):
-            if y % 100 == 0:
-                print(f"      Row {y}/{height} ({y*100//height}%)")
+            # Progress every 25 rows
+            if y % 25 == 0:
+                elapsed = time.time() - start_time
+                progress = (y / height) * 100
+                pixels_per_sec = processed / max(elapsed, 0.1)
+                eta = (width * height - processed) / max(pixels_per_sec, 1)
+                print(f"      Row {y}/{height} ({progress:.1f}%) - {processed:,} pixels - ETA: {eta:.0f}s")
             
             for x in range(width):
-                old_pixel = img_array[y, x]
+                # Get current pixel
+                old_r, old_g, old_b = working_data[y][x]
                 
-                # Find closest color
-                distances = np.sum((palette_colors - old_pixel) ** 2, axis=1)
-                best_idx = np.argmin(distances)
-                best_color = palette_colors[best_idx]
-                best_code = palette_codes[best_idx]
+                # Find closest palette color
+                min_dist = float('inf')
+                best_color = palette[0][1]
+                best_code = palette[0][0]
                 
-                result_array[y, x] = best_color
+                for color_code, (tr, tg, tb) in palette:
+                    dist = (old_r - tr)**2 + (old_g - tg)**2 + (old_b - tb)**2
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_color = (tr, tg, tb)
+                        best_code = color_code
+                
+                # Set result pixel
+                result_pixels[x, y] = best_color
                 color_counts[best_code] += 1
+                processed += 1
                 
-                # Error diffusion
-                error = old_pixel - best_color
+                # Calculate error
+                err_r = old_r - best_color[0]
+                err_g = old_g - best_color[1]
+                err_b = old_b - best_color[2]
                 
+                # Distribute error (Floyd-Steinberg pattern)
                 if x + 1 < width:
-                    img_array[y, x + 1] += error * (7.0/16.0)
+                    working_data[y][x + 1][0] += err_r * 7.0 / 16.0
+                    working_data[y][x + 1][1] += err_g * 7.0 / 16.0
+                    working_data[y][x + 1][2] += err_b * 7.0 / 16.0
+                
                 if y + 1 < height:
                     if x > 0:
-                        img_array[y + 1, x - 1] += error * (3.0/16.0)
-                    img_array[y + 1, x] += error * (5.0/16.0)
+                        working_data[y + 1][x - 1][0] += err_r * 3.0 / 16.0
+                        working_data[y + 1][x - 1][1] += err_g * 3.0 / 16.0
+                        working_data[y + 1][x - 1][2] += err_b * 3.0 / 16.0
+                    
+                    working_data[y + 1][x][0] += err_r * 5.0 / 16.0
+                    working_data[y + 1][x][1] += err_g * 5.0 / 16.0
+                    working_data[y + 1][x][2] += err_b * 5.0 / 16.0
+                    
                     if x + 1 < width:
-                        img_array[y + 1, x + 1] += error * (1.0/16.0)
+                        working_data[y + 1][x + 1][0] += err_r * 1.0 / 16.0
+                        working_data[y + 1][x + 1][1] += err_g * 1.0 / 16.0
+                        working_data[y + 1][x + 1][2] += err_b * 1.0 / 16.0
                 
-                img_array = np.clip(img_array, 0, 255)
+                # Clamp values every 100 pixels to prevent overflow
+                if processed % 100 == 0:
+                    for dy in range(max(0, y), min(height, y + 2)):
+                        for dx in range(max(0, x - 1), min(width, x + 2)):
+                            if dy < len(working_data) and dx < len(working_data[dy]):
+                                working_data[dy][dx][0] = max(0.0, min(255.0, working_data[dy][dx][0]))
+                                working_data[dy][dx][1] = max(0.0, min(255.0, working_data[dy][dx][1]))
+                                working_data[dy][dx][2] = max(0.0, min(255.0, working_data[dy][dx][2]))
         
-        quantized = Image.fromarray(result_array, 'RGB')
+        total_time = time.time() - start_time
+        print(f"      ✅ Completed {processed:,} pixels in {total_time:.1f} seconds ({processed/total_time:.0f} pixels/sec)")
         
         # Print color distribution
         total_pixels = width * height
-        print("   Color distribution (custom dithering):")
+        print("   Color distribution (Floyd-Steinberg):")
         color_names = {0x0: "BLACK", 0x1: "WHITE", 0x2: "YELLOW", 0x3: "RED", 0x5: "BLUE", 0x6: "GREEN"}
         for code, count in color_counts.items():
             percentage = (count / total_pixels) * 100
             print(f"     {color_names.get(code, f'0x{code:X}')}: {count:6d} pixels ({percentage:5.1f}%)")
         
         if debug:
-            debug_path = f"debug_custom_dithered.png"
-            quantized.save(debug_path)
-            print(f"   Custom dithered debug image saved: {debug_path}")
+            debug_path = f"debug_floyd_steinberg.png"
+            result.save(debug_path)
+            print(f"   Floyd-Steinberg debug image saved: {debug_path}")
         
-        return quantized
+        return result
 
     def quantize_to_e6_palette(self, img, palette, debug=False):
         """Simple nearest-color quantization - no dithering"""
@@ -457,7 +503,7 @@ def main():
     parser.add_argument('--resize', choices=['fit', 'fill', 'stretch'], default='fit',
                        help='Resize mode: fit (maintain ratio), fill (crop to fill), stretch (may distort)')
     parser.add_argument('--dither', choices=['fast', 'quality', 'none'], default='none',
-                       help='Dithering method: fast (PIL), quality (Floyd-Steinberg), none (nearest color)')
+                       help='Dithering method: fast (PIL optimized), quality (Floyd-Steinberg), none (nearest color)')
     parser.add_argument('--debug', action='store_true', help='Save debug images and show detailed output')
     
     args = parser.parse_args()

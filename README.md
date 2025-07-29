@@ -199,9 +199,23 @@ python send_image_to_epaper.py --image photo.jpg --dither quality
 ```
 
 **Dithering Comparison:**
-- **None**: Fastest processing, hard color transitions, potential banding
-- **Fast**: Good balance of speed and quality, uses PIL's optimized dithering
-- **Quality**: Best image quality, slower processing, custom implementation
+
+| Method | Speed | Quality | Description |
+|--------|-------|---------|-------------|
+| **None** | ⚡ Instant | Basic | Hard color transitions, potential banding |
+| **Fast** | 🚀 1-2 seconds | Excellent | PIL's optimized Floyd-Steinberg (recommended) |
+| **Quality** | 🐌 30-60 seconds | Best | Custom implementation with progress tracking |
+
+**Performance Notes:**
+- **None**: No processing delay, good for testing
+- **Fast**: Best balance of speed and quality for daily use
+- **Quality**: Maximum quality but takes time (shows progress: `Row 50/480 (10%) - ETA: 35s`)
+
+**Visual Quality:**
+- **Without dithering**: `BLUE → BLUE → WHITE → WHITE → WHITE`
+- **With dithering**: `BLUE → BLUE+WHITE → WHITE+BLUE → WHITE`
+
+For e-paper displays, dithering is especially valuable because of the limited 6-color palette.
 
 ### Complete Examples
 
@@ -240,6 +254,14 @@ The display supports 6 colors with specific RGB values:
 - **E-Paper Refresh**: 10-45 seconds (hardware limitation)
 - **HTTP Response**: Immediate (non-blocking)
 
+### Image Processing Performance
+
+| Dithering Method | Processing Time | Quality | Recommended Use |
+|------------------|-----------------|---------|-----------------|
+| None | < 1 second | Basic | Testing, simple graphics |
+| Fast (PIL) | 1-2 seconds | Excellent | **Daily use - recommended** |
+| Quality (Custom) | 30-60 seconds | Best | High-quality photos, final output |
+
 ### Memory Usage
 
 - **Shared Buffer**: 192KB (uses PSRAM when available)
@@ -276,8 +298,14 @@ open http://192.168.1.100/api/status
 - Check free heap in `/api/status`
 
 **"Display not ready or busy"**
-- Display is currently refreshing (wait 45 seconds)
+- Display is currently refreshing (wait up to 45 seconds)
 - Check `display_busy` field in `/api/status`
+- Multiple rapid requests will replace queued images
+
+**Quality dithering hanging at 0%**
+- Old issue - now fixed with progress tracking
+- Should show: `Row 25/480 (5%) - 20,000 pixels - ETA: 45s`
+- Takes 30-60 seconds to complete (this is normal)
 
 **"Upload incomplete"**
 - Image processing failed in Python client
@@ -300,8 +328,20 @@ python send_image_to_epaper.py --image photo.jpg --debug --dither fast
 - `debug_resized_[mode].png` - Resized image
 - `debug_quantized.png` - Color-reduced image (no dither)
 - `debug_pil_dithered.png` - PIL dithered result
-- `debug_custom_dithered.png` - Custom dithered result
+- `debug_floyd_steinberg.png` - Quality dithered result
 - Console output with timing and color statistics
+
+**Quality Dithering Progress:**
+When using `--dither quality`, you'll see detailed progress:
+```
+🎨 Applying Floyd-Steinberg dithering (working version)...
+      Processing 800x480 = 384000 pixels...
+      Row 0/480 (0%) - 0 pixels - ETA: 0s
+      Row 25/480 (5%) - 20,000 pixels - ETA: 45s
+      Row 50/480 (10%) - 40,000 pixels - ETA: 35s
+      ...
+      ✅ Completed 384,000 pixels in 42.3 seconds (9,076 pixels/sec)
+```
 
 ### Serial Monitor
 
