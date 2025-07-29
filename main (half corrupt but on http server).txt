@@ -196,8 +196,7 @@ int epd_init(void) {
 
 // Clear display to a single color
 void epd_clear(unsigned char color) {
-  unsigned int W = (EPD_WIDTH + 1) / 2;
-
+  unsigned int W = (EPD_WIDTH % 4 == 0 ? EPD_WIDTH/4 : EPD_WIDTH/4+1);
   unsigned int H = EPD_HEIGHT;
   
   epd_send_command(0x04);  // Power ON
@@ -225,8 +224,7 @@ uint8_t epd_correct_color(uint8_t color) {
 
 // Display raw buffer (4-bit pixels) - WITH COLOR CORRECTION
 void epd_display(unsigned char *image) {
-  unsigned int W = (EPD_WIDTH + 1) / 2;
-
+  unsigned int W = (EPD_WIDTH % 4 == 0 ? EPD_WIDTH/4 : EPD_WIDTH/4+1);
   unsigned int H = EPD_HEIGHT;
   
   epd_send_command(0x04);  // Power ON
@@ -256,8 +254,7 @@ void epd_sleep(void) {
 void showTestPattern() {
   if (!displayInitialized) return;
   
-  unsigned int W = (EPD_WIDTH + 1) / 2;
-
+  unsigned int W = (EPD_WIDTH % 4 == 0 ? EPD_WIDTH/4 : EPD_WIDTH/4+1);
   unsigned int H = EPD_HEIGHT;
   
   epd_send_command(0x04);  // Power ON
