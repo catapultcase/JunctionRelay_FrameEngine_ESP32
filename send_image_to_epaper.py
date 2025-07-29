@@ -132,8 +132,8 @@ class EPaperImageSender:
                     (0x1, (255, 255, 255)),     # WHITE  
                     (0x2, (255, 255, 0)),       # YELLOW
                     (0x3, (255, 0, 0)),         # RED
-                    (0x5, (0, 0, 255)),         # BLUE
-                    (0x6, (0, 255, 0))          # GREEN
+                    (0x4, (0, 0, 255)),         # BLUE
+                    (0x5, (0, 255, 0))          # GREEN
                 ]
                 
                 # Apply quantization based on dither mode
@@ -260,7 +260,7 @@ class EPaperImageSender:
         # Print color distribution
         total_pixels = width * height
         print("   Color distribution (PIL dithering):")
-        color_names = {0x0: "BLACK", 0x1: "WHITE", 0x2: "YELLOW", 0x3: "RED", 0x5: "BLUE", 0x6: "GREEN"}
+        color_names = {0x0: "BLACK", 0x1: "WHITE", 0x2: "YELLOW", 0x3: "RED", 0x4: "BLUE", 0x5: "GREEN"}
         for code, count in color_counts.items():
             percentage = (count / total_pixels) * 100
             print(f"     {color_names.get(code, f'0x{code:X}')}: {count:6d} pixels ({percentage:5.1f}%)")
@@ -368,7 +368,7 @@ class EPaperImageSender:
         # Print color distribution
         total_pixels = width * height
         print("   Color distribution (Floyd-Steinberg):")
-        color_names = {0x0: "BLACK", 0x1: "WHITE", 0x2: "YELLOW", 0x3: "RED", 0x5: "BLUE", 0x6: "GREEN"}
+        color_names = {0x0: "BLACK", 0x1: "WHITE", 0x2: "YELLOW", 0x3: "RED", 0x4: "BLUE", 0x5: "GREEN"}
         for code, count in color_counts.items():
             percentage = (count / total_pixels) * 100
             print(f"     {color_names.get(code, f'0x{code:X}')}: {count:6d} pixels ({percentage:5.1f}%)")
@@ -418,7 +418,7 @@ class EPaperImageSender:
         # Print color distribution
         total_pixels = width * height
         print("   Color distribution (no dithering):")
-        color_names = {0x0: "BLACK", 0x1: "WHITE", 0x2: "YELLOW", 0x3: "RED", 0x5: "BLUE", 0x6: "GREEN"}
+        color_names = {0x0: "BLACK", 0x1: "WHITE", 0x2: "YELLOW", 0x3: "RED", 0x4: "BLUE", 0x5: "GREEN"}
         for code, count in color_counts.items():
             percentage = (count / total_pixels) * 100
             print(f"     {color_names.get(code, f'0x{code:X}')}: {count:6d} pixels ({percentage:5.1f}%)")
@@ -475,7 +475,7 @@ class EPaperImageSender:
         print("📊 Creating E6 test pattern...")
         
         raw_data = bytearray()
-        colors = [0x0, 0x1, 0x2, 0x3, 0x5, 0x6]
+        colors = [0x0, 0x1, 0x2, 0x3, 0x4, 0x5]
         
         for y in range(EPD_HEIGHT):
             color_index = min(y // 80, 5)

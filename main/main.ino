@@ -190,15 +190,18 @@ void epd_turn_on_display(void) {
   Serial.println("[DISPLAY] Starting display update sequence...");
   
   epd_send_command(0x04); // Power ON  
-  epd_busy_wait(0.4);
+  epd_busy_wait(1.0);     // Increased from 0.4s to 1.0s
+  epd_delay_ms(500);      // Extra power stabilization
   
   epd_send_command(0x12); // DISPLAY_REFRESH
   epd_send_data(0x01);
-  epd_busy_wait(45.0);    // This can take 45 seconds - no problem on display core!
-
+  epd_busy_wait(60.0);    // Increased from 45s to 60s
+  
+  epd_delay_ms(1000);     // Delay before power off
   epd_send_command(0x02); // POWER_OFF
   epd_send_data(0x00);
-  epd_busy_wait(0.4);
+  epd_busy_wait(1.0);     // Increased from 0.4s to 1.0s
+  epd_delay_ms(500);      // Final stabilization
   
   Serial.println("[DISPLAY] Display update complete");
 }
