@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """
-ESP32 E6 E-Paper Image Sender with WORKING Quality Dithering
-Fixed version that actually completes without hanging
+ESP32 E6 E-Paper Image Sender with Contrast/Saturation Enhancement
+Clean working version with all features
 """
 
 import os
 import sys
 import requests
 import json
-from PIL import Image, ImageOps
+from PIL import Image, ImageOps, ImageEnhance
 import time
 import argparse
 
@@ -51,8 +51,9 @@ class EPaperImageSender:
             print(f"❌ Failed to connect to ESP32: {e}")
             return False
     
-    def convert_image_for_epaper(self, image_path, resize_mode='fit', dither_mode='none', debug=False):
-        """Convert image to E6 e-paper format with optional dithering"""
+    def convert_image_for_epaper(self, image_path, resize_mode='fit', dither_mode='none', 
+                                contrast=1.0, saturation=1.0, debug=False):
+        """Convert image to E6 e-paper format with optional dithering and enhancements"""
         try:
             print(f"🖼️  Processing image: {image_path}")
             
@@ -66,6 +67,7 @@ class EPaperImageSender:
                 print(f"   Original mode: {img.mode}")
                 print(f"   Resize mode: {resize_mode}")
                 print(f"   Dithering: {dither_mode}")
+                print(f"   Contrast: {contrast:.1f}x, Saturation: {saturation:.1f}x")
                 
                 # Convert to RGB if needed
                 if img.mode != 'RGB':
@@ -112,9 +114,16 @@ class EPaperImageSender:
                 
                 print(f"✅ Final size: {resized_img.size}")
                 
+                # Apply contrast and saturation adjustments
+                if contrast != 1.0 or saturation != 1.0:
+                    print(f"   🎨 Applying image enhancements...")
+                    enhanced_img = self.enhance_image(resized_img, contrast, saturation, debug)
+                else:
+                    enhanced_img = resized_img
+                
                 if debug:
                     debug_path = f"debug_resized_{resize_mode}.png"
-                    resized_img.save(debug_path)
+                    enhanced_img.save(debug_path)
                     print(f"   Debug image saved: {debug_path}")
                 
                 # Define E6 palette
@@ -129,11 +138,11 @@ class EPaperImageSender:
                 
                 # Apply quantization based on dither mode
                 if dither_mode == 'fast':
-                    quantized_img = self.pil_dither_to_e6(resized_img, e6_palette, debug)
+                    quantized_img = self.pil_dither_to_e6(enhanced_img, e6_palette, debug)
                 elif dither_mode == 'quality':
-                    quantized_img = self.floyd_steinberg_dither(resized_img, e6_palette, debug)
+                    quantized_img = self.floyd_steinberg_dither(enhanced_img, e6_palette, debug)
                 else:  # 'none'
-                    quantized_img = self.quantize_to_e6_palette(resized_img, e6_palette, debug)
+                    quantized_img = self.quantize_to_e6_palette(enhanced_img, e6_palette, debug)
                 
                 # Convert to E6 format
                 raw_data = self.convert_to_e6_format(quantized_img, e6_palette)
@@ -156,6 +165,45 @@ class EPaperImageSender:
             import traceback
             traceback.print_exc()
             return None
+
+    def enhance_image(self, img, contrast=1.0, saturation=1.0, debug=False):
+        """Apply contrast and saturation adjustments"""
+        enhanced_img = img
+        
+        # Apply contrast adjustment
+        if contrast != 1.0:
+            print(f"      Adjusting contrast: {contrast:.1f}x")
+            contrast_enhancer = ImageEnhance.Contrast(enhanced_img)
+            enhanced_img = contrast_enhancer.enhance(contrast)
+            
+            if debug:
+                debug_path = f"debug_contrast_{contrast:.1f}.png"
+                enhanced_img.save(debug_path)
+                print(f"      Contrast debug image saved: {debug_path}")
+        
+        # Apply saturation adjustment
+        if saturation != 1.0:
+            print(f"      Adjusting saturation: {saturation:.1f}x")
+            saturation_enhancer = ImageEnhance.Color(enhanced_img)
+            enhanced_img = saturation_enhancer.enhance(saturation)
+            
+            if debug:
+                debug_path = f"debug_saturation_{saturation:.1f}.png"
+                enhanced_img.save(debug_path)
+                print(f"      Saturation debug image saved: {debug_path}")
+        
+        # Optional: Auto-adjust brightness for e-ink optimization
+        if contrast > 1.5 or saturation > 1.5:
+            print(f"      Applying brightness optimization for e-ink...")
+            brightness_enhancer = ImageEnhance.Brightness(enhanced_img)
+            enhanced_img = brightness_enhancer.enhance(1.1)  # Slight brightness boost
+            
+            if debug:
+                debug_path = f"debug_enhanced_final.png"
+                enhanced_img.save(debug_path)
+                print(f"      Final enhanced debug image saved: {debug_path}")
+        
+        return enhanced_img
 
     def pil_dither_to_e6(self, img, palette, debug=False):
         """Use PIL's built-in dithering - FAST"""
@@ -504,6 +552,10 @@ def main():
                        help='Resize mode: fit (maintain ratio), fill (crop to fill), stretch (may distort)')
     parser.add_argument('--dither', choices=['fast', 'quality', 'none'], default='none',
                        help='Dithering method: fast (PIL optimized), quality (Floyd-Steinberg), none (nearest color)')
+    parser.add_argument('--contrast', type=float, default=1.0, metavar='FACTOR',
+                       help='Contrast adjustment factor (1.0=normal, 1.5=50%% more contrast, 0.5=50%% less)')
+    parser.add_argument('--saturation', type=float, default=1.0, metavar='FACTOR',
+                       help='Saturation adjustment factor (1.0=normal, 1.5=50%% more vibrant, 0.0=grayscale)')
     parser.add_argument('--debug', action='store_true', help='Save debug images and show detailed output')
     
     args = parser.parse_args()
@@ -512,6 +564,8 @@ def main():
     print("🖼️  ESP32 E6 E-Paper Image Sender")
     if args.dither != 'none':
         print(f"🎨 With {args.dither.upper()} dithering")
+    if args.contrast != 1.0 or args.saturation != 1.0:
+        print(f"✨ Enhanced: Contrast {args.contrast:.1f}x, Saturation {args.saturation:.1f}x")
     print("=" * 60)
     print(f"Display: 7.3\" E6 Spectra 6-color ({EPD_WIDTH}x{EPD_HEIGHT})")
     print(f"Buffer size: {EPD_BUFFER_SIZE} bytes")
@@ -534,7 +588,8 @@ def main():
         success = sender.send_test_pattern()
     else:
         print(f"\n🖼️  Processing image: {args.image}")
-        image_data = sender.convert_image_for_epaper(args.image, args.resize, args.dither, args.debug)
+        image_data = sender.convert_image_for_epaper(args.image, args.resize, args.dither, 
+                                                     args.contrast, args.saturation, args.debug)
         if image_data:
             success = sender.send_image_data(image_data)
         else:
@@ -546,6 +601,8 @@ def main():
         print("🎉 Image sent successfully!")
         if args.dither != 'none':
             print("   Dithering should improve image quality on the display")
+        if args.contrast != 1.0 or args.saturation != 1.0:
+            print("   Image enhancements should make colors more striking on e-ink")
         print("   The E6 display should update shortly...")
         if args.debug:
             print("   Debug images saved in current directory")

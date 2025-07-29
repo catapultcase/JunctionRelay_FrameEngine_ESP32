@@ -64,6 +64,9 @@ python send_image_to_epaper.py --ip 192.168.1.100 --image photo.jpg --dither fas
 
 # Fill entire display (crop if needed)
 python send_image_to_epaper.py --ip 192.168.1.100 --image photo.jpg --resize fill --dither fast
+
+# Enhanced with contrast and saturation boost for e-ink
+python send_image_to_epaper.py --ip 192.168.1.100 --image photo.jpg --dither fast --contrast 1.5 --saturation 1.3
 ```
 
 ## API Endpoints
@@ -159,6 +162,9 @@ python send_image_to_epaper.py --ip 192.168.1.100 --image photo.jpg
 # Send test pattern
 python send_image_to_epaper.py --test
 
+# Enhanced image with custom settings
+python send_image_to_epaper.py --image photo.jpg --dither fast --contrast 1.4 --saturation 1.2
+
 # Save debug images
 python send_image_to_epaper.py --image photo.jpg --debug
 ```
@@ -217,17 +223,55 @@ python send_image_to_epaper.py --image photo.jpg --dither quality
 
 For e-paper displays, dithering is especially valuable because of the limited 6-color palette.
 
+### Image Enhancement Options
+
+Boost contrast and saturation to make images more striking on e-ink displays:
+
+```bash
+# Boost contrast for more dramatic images
+python send_image_to_epaper.py --image photo.jpg --contrast 1.5 --dither fast
+
+# Increase saturation for more vibrant colors  
+python send_image_to_epaper.py --image photo.jpg --saturation 1.5 --dither fast
+
+# Combine both for maximum impact
+python send_image_to_epaper.py --image photo.jpg --contrast 1.8 --saturation 1.6 --dither fast
+
+# Create grayscale image
+python send_image_to_epaper.py --image photo.jpg --saturation 0.0 --contrast 1.3 --dither fast
+```
+
+**Enhancement Parameters:**
+
+| Parameter | Default | Description | Recommended Range |
+|-----------|---------|-------------|-------------------|
+| **Contrast** | 1.0 | Contrast multiplier | 0.5 - 2.0 |
+| **Saturation** | 1.0 | Color vibrancy multiplier | 0.0 - 2.0 |
+
+**Enhancement Examples:**
+- **Photos**: `--contrast 1.3 --saturation 1.2` (natural enhancement)
+- **Art/Graphics**: `--contrast 1.6 --saturation 1.5` (vibrant)
+- **Text/Documents**: `--contrast 1.8 --saturation 0.8` (high contrast)
+- **Grayscale**: `--contrast 1.5 --saturation 0.0` (black & white)
+- **Vintage**: `--contrast 0.7 --saturation 0.8` (muted, soft)
+
 ### Complete Examples
 
 ```bash
 # Portrait photo with quality dithering
 python send_image_to_epaper.py --image portrait.jpg --resize fill --dither quality --debug
 
-# Landscape photo, fast processing
-python send_image_to_epaper.py --image landscape.jpg --resize fit --dither fast
+# Landscape photo, fast processing with enhancements
+python send_image_to_epaper.py --image landscape.jpg --resize fit --dither fast --contrast 1.4 --saturation 1.2
 
-# Test different settings quickly
-python send_image_to_epaper.py --image test.jpg --resize stretch --dither none
+# Dramatic black and white
+python send_image_to_epaper.py --image photo.jpg --saturation 0.0 --contrast 1.8 --dither fast
+
+# Maximum vibrant colors
+python send_image_to_epaper.py --image colorful.jpg --contrast 1.6 --saturation 1.8 --dither fast
+
+# Subtle enhancement for natural look
+python send_image_to_epaper.py --image nature.jpg --contrast 1.2 --saturation 1.1 --dither fast
 ```
 
 ## Color Palette
@@ -325,7 +369,10 @@ python send_image_to_epaper.py --image photo.jpg --debug --dither fast
 ```
 
 **Debug outputs:**
-- `debug_resized_[mode].png` - Resized image
+- `debug_resized_[mode].png` - Resized image (with enhancements applied)
+- `debug_contrast_[value].png` - After contrast adjustment (if applied)
+- `debug_saturation_[value].png` - After saturation adjustment (if applied)
+- `debug_enhanced_final.png` - Final enhanced image (if high enhancement values used)
 - `debug_quantized.png` - Color-reduced image (no dither)
 - `debug_pil_dithered.png` - PIL dithered result
 - `debug_floyd_steinberg.png` - Quality dithered result
@@ -395,9 +442,11 @@ Process multiple images quickly:
 
 ```bash
 #!/bin/bash
+# Process multiple images with optimal e-ink settings
 for image in *.jpg; do
     echo "Processing $image..."
-    python send_image_to_epaper.py --image "$image" --dither fast --resize fill
+    python send_image_to_epaper.py --image "$image" --dither fast --resize fill \
+                                   --contrast 1.4 --saturation 1.2
     sleep 60  # Wait for display to finish
 done
 ```
