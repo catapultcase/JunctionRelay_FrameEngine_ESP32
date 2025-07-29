@@ -1,3 +1,6 @@
+#include <WiFi.h>
+#include <WebServer.h>
+#include <ArduinoJson.h>
 #include <SPI.h>
 
 // Pin definitions for ESP32 S3 Feather (adjust to your wiring)
@@ -9,7 +12,7 @@
 // Display specifications for Waveshare 7.3inch E-Paper (E) - 6 color
 #define EPD_WIDTH   800
 #define EPD_HEIGHT  480
-// Buffer size (4 bits per pixel = 2 pixels/byte)
+// Buffer size (4 bits per pixel = 2 pixels/byte) - CORRECTED
 #define EPD_BUFFER_SIZE ((EPD_WIDTH * EPD_HEIGHT) / 2)
 
 // 6-color definitions (4 bits per pixel) - CORRECTED BASED ON CADRE PROJECT
@@ -22,7 +25,17 @@
 #define EPD_BLUE    0x05  // Index 5 (was 4 in display, but 4 is unused)
 #define EPD_GREEN   0x06  // Index 6 (was 5 in display, but 4 is unused)
 
+// WiFi Configuration
+const char* WIFI_SSID     = "Jon6";
+const char* WIFI_PASSWORD = "fv4!F48P8&tR";
+
+WebServer server(80);
 bool displayInitialized = false;
+
+// === Upload State ===
+uint8_t* imageBuffer = nullptr;
+unsigned int uploadBytesReceived = 0;
+bool uploadInProgress = false;
 
 // === Hardware Interface Layer ===
 void epd_digital_write(int pin, int value) { digitalWrite(pin, value); }
@@ -46,15 +59,33 @@ void epd_send_data(unsigned char data) {
 }
 
 void epd_read_busy_h(void) {
+  Serial.print("⏳ Checking BUSY pin...");
+  unsigned long start_time = millis();
+  unsigned long timeout = 5000; // Much shorter 5 second timeout
+  
   while (epd_digital_read(EPD_BUSY) == LOW) {
-    epd_delay_ms(5);
+    epd_delay_ms(10);
+    if (millis() - start_time > timeout) {
+      Serial.println(" TIMEOUT (continuing)");
+      return; // Just continue, don't wait forever
+    }
   }
+  Serial.println(" OK");
 }
 
 void epd_read_busy_l(void) {
+  Serial.print("⏳ Checking BUSY pin...");
+  unsigned long start_time = millis();
+  unsigned long timeout = 5000; // Much shorter 5 second timeout
+  
   while (epd_digital_read(EPD_BUSY) == HIGH) {
-    epd_delay_ms(5);
+    epd_delay_ms(10);
+    if (millis() - start_time > timeout) {
+      Serial.println(" TIMEOUT (continuing)");
+      return; // Just continue, don't wait forever
+    }
   }
+  Serial.println(" OK");
 }
 
 void epd_reset(void) {
@@ -67,13 +98,15 @@ void epd_reset(void) {
 }
 
 void epd_turn_on_display(void) {
+  Serial.println("📺 Turning on display...");
   epd_send_command(0x12); // DISPLAY_REFRESH
   epd_send_data(0x01);
-  epd_read_busy_h();
+  Serial.println("⏳ Display refresh initiated (non-blocking)");
+  // Don't wait - let the display update in background
 
   epd_send_command(0x02); // POWER_OFF
   epd_send_data(0x00);
-  epd_read_busy_h();
+  Serial.println("🔌 Display commands sent");
 }
 
 int epd_if_init(void) {
@@ -197,7 +230,6 @@ int epd_init(void) {
 // Clear display to a single color
 void epd_clear(unsigned char color) {
   unsigned int W = (EPD_WIDTH + 1) / 2;
-
   unsigned int H = EPD_HEIGHT;
   
   epd_send_command(0x04);  // Power ON
@@ -210,6 +242,94 @@ void epd_clear(unsigned char color) {
     }
   }
   epd_turn_on_display();
+}
+
+// === HTTP Upload Handlers ===
+void handleFrameUploadBody() {
+  HTTPUpload& upload = server.upload();
+  if (upload.status == UPLOAD_FILE_START) {
+    uploadInProgress = true;
+    uploadBytesReceived = 0;
+    if (!imageBuffer) {
+      imageBuffer = (uint8_t*)malloc(EPD_BUFFER_SIZE);
+      if (!imageBuffer) {
+        uploadInProgress = false;
+        return;
+      }
+    }
+  }
+  else if (upload.status == UPLOAD_FILE_WRITE) {
+    if (uploadBytesReceived + upload.currentSize <= EPD_BUFFER_SIZE) {
+      memcpy(imageBuffer + uploadBytesReceived, upload.buf, upload.currentSize);
+      uploadBytesReceived += upload.currentSize;
+    }
+  }
+  else if (upload.status == UPLOAD_FILE_END) {
+    uploadInProgress = false;
+  }
+  else if (upload.status == UPLOAD_FILE_ABORTED) {
+    uploadInProgress = false;
+    uploadBytesReceived = 0;
+  }
+}
+
+void handleFrameUpload() {
+  if (!displayInitialized) {
+    server.send(500, "application/json", "{\"error\":\"Display not ready\"}");
+    return;
+  }
+  if (uploadInProgress) {
+    server.send(500, "application/json", "{\"error\":\"Upload in progress\"}");
+    return;
+  }
+  if (uploadBytesReceived != EPD_BUFFER_SIZE) {
+    uploadBytesReceived = 0;
+    server.send(400, "application/json", "{\"error\":\"Upload incomplete\"}");
+    return;
+  }
+  
+  Serial.println("📤 Image upload complete!");
+  Serial.printf("📊 Received %d bytes (expected %d)\n", uploadBytesReceived, EPD_BUFFER_SIZE);
+  server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Image received\"}");
+  
+  // Render from raw buffer
+  Serial.println("🖼️  Starting image display...");
+  epd_display(imageBuffer);
+  Serial.println("✅ Image display complete!");
+  uploadBytesReceived = 0;
+}
+
+// === Other HTTP Handlers ===
+void handleStatus() {
+  DynamicJsonDocument doc(500);
+  doc["status"]              = "running";
+  doc["service"]             = "epaper_6color_frame";
+  doc["display_initialized"] = displayInitialized;
+  doc["resolution"]          = String(EPD_WIDTH) + "x" + String(EPD_HEIGHT);
+  doc["buffer_size"]         = EPD_BUFFER_SIZE;
+  doc["ip_address"]          = WiFi.localIP().toString();
+  doc["free_heap"]           = ESP.getFreeHeap();
+  String resp;
+  serializeJson(doc, resp);
+  server.send(200, "application/json", resp);
+}
+
+void handleClear() {
+  if (!displayInitialized) {
+    server.send(500, "application/json", "{\"error\":\"Display not initialized\"}");
+    return;
+  }
+  epd_clear(EPD_WHITE);
+  server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Display cleared\"}");
+}
+
+void handleTest() {
+  if (!displayInitialized) {
+    server.send(500, "application/json", "{\"error\":\"Display not ready\"}");
+  } else {
+    showTestPattern();
+    server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Test pattern displayed\"}");
+  }
 }
 
 // CRITICAL: Color correction function based on Cadre project findings
@@ -226,12 +346,12 @@ uint8_t epd_correct_color(uint8_t color) {
 // Display raw buffer (4-bit pixels) - WITH COLOR CORRECTION
 void epd_display(unsigned char *image) {
   unsigned int W = (EPD_WIDTH + 1) / 2;
-
   unsigned int H = EPD_HEIGHT;
   
   epd_send_command(0x04);  // Power ON
-  epd_read_busy_h();
+  epd_read_busy_h();  // Quick check only
   
+  Serial.println("📤 Sending image data to display...");
   epd_send_command(0x10);  // Data Start Transmission
   for (unsigned int j = 0; j < H; j++) {
     for (unsigned int i = 0; i < W; i++) {
@@ -242,6 +362,7 @@ void epd_display(unsigned char *image) {
       epd_send_data((pixel1 << 4) | pixel2);
     }
   }
+  Serial.println("✅ Image data sent, starting display update...");
   epd_turn_on_display();
 }
 
@@ -257,7 +378,6 @@ void showTestPattern() {
   if (!displayInitialized) return;
   
   unsigned int W = (EPD_WIDTH + 1) / 2;
-
   unsigned int H = EPD_HEIGHT;
   
   epd_send_command(0x04);  // Power ON
@@ -294,12 +414,36 @@ void setup() {
   if (epd_init() == 0) {
     displayInitialized = true;
     Serial.println("✅ Display initialized");
+    Serial.println("🎨 Showing test pattern...");
     showTestPattern();
+    Serial.println("✅ Test pattern complete");
   } else {
     Serial.println("❌ Display init failed");
+    return;
   }
+  
+  Serial.println("🌐 Starting WiFi connection...");
+
+  // Connect WiFi
+  WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
+  while (WiFi.status() != WL_CONNECTED) {
+    delay(500);
+    Serial.print(".");
+  }
+  Serial.println();
+  Serial.printf("✅ WiFi connected: %s\n", WiFi.localIP().toString().c_str());
+
+  // Setup HTTP routes
+  server.on("/api/display/frame", HTTP_POST, handleFrameUpload, handleFrameUploadBody);
+  server.on("/api/status",        HTTP_GET,  handleStatus);
+  server.on("/api/clear",         HTTP_GET,  handleClear);
+  server.on("/api/test",          HTTP_GET,  handleTest);
+
+  server.begin();
+  Serial.println("✅ HTTP server running on port 80");
 }
 
 void loop() {
-  delay(1000);
+  server.handleClient();
+  delay(1);
 }
