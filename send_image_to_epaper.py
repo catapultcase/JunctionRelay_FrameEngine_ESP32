@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-ESP32 E6 E-Paper Image Sender
-Sends images to ESP32 E6 e-paper display via HTTP API
+ESP32 E6 E-Paper Image Sender with Fast Dithering
+Enhanced version that uses PIL's optimized dithering for better image quality
 """
 
 import os
@@ -11,6 +11,7 @@ import json
 from PIL import Image, ImageOps
 import time
 import argparse
+import numpy as np
 
 # Default configuration
 DEFAULT_ESP32_IP = "10.168.1.166"
@@ -51,8 +52,8 @@ class EPaperImageSender:
             print(f"❌ Failed to connect to ESP32: {e}")
             return False
     
-    def convert_image_for_epaper(self, image_path, resize_mode='fit', debug=False):
-        """Convert image to E6 e-paper format with proper sizing and debugging"""
+    def convert_image_for_epaper(self, image_path, resize_mode='fit', dither_mode='none', debug=False):
+        """Convert image to E6 e-paper format with optional dithering"""
         try:
             print(f"🖼️  Processing image: {image_path}")
             
@@ -65,74 +66,59 @@ class EPaperImageSender:
                 print(f"   Original size: {img.size} ({img.width}x{img.height})")
                 print(f"   Original mode: {img.mode}")
                 print(f"   Resize mode: {resize_mode}")
+                print(f"   Dithering: {dither_mode}")
                 
                 # Convert to RGB if needed
                 if img.mode != 'RGB':
                     img = img.convert('RGB')
                 
-                # Apply different resizing strategies with exact dimensions
+                # Apply different resizing strategies
                 if resize_mode == 'stretch':
-                    # Stretch to exact display size
                     resized_img = img.resize((EPD_WIDTH, EPD_HEIGHT), Image.Resampling.LANCZOS)
                     print(f"   Stretched to: {resized_img.size}")
                     
                 elif resize_mode == 'fill':
-                    # Fill entire display, crop if needed
                     img_ratio = img.width / img.height
                     display_ratio = EPD_WIDTH / EPD_HEIGHT
                     print(f"   Image ratio: {img_ratio:.3f}, Display ratio: {display_ratio:.3f}")
                     
                     if img_ratio > display_ratio:
-                        # Image is wider - fit by height and crop width
                         new_height = EPD_HEIGHT
                         new_width = int(new_height * img_ratio)
                         temp_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                        print(f"   Temp resize: {temp_img.size}")
-                        
-                        # Crop to center
                         left = (new_width - EPD_WIDTH) // 2
                         resized_img = temp_img.crop((left, 0, left + EPD_WIDTH, EPD_HEIGHT))
                         print(f"   Cropped from x={left} to x={left + EPD_WIDTH}")
                     else:
-                        # Image is taller - fit by width and crop height
                         new_width = EPD_WIDTH
                         new_height = int(new_width / img_ratio)
                         temp_img = img.resize((new_width, new_height), Image.Resampling.LANCZOS)
-                        print(f"   Temp resize: {temp_img.size}")
-                        
-                        # Crop to center
                         top = (new_height - EPD_HEIGHT) // 2
                         resized_img = temp_img.crop((0, top, EPD_WIDTH, top + EPD_HEIGHT))
                         print(f"   Cropped from y={top} to y={top + EPD_HEIGHT}")
                         
                 else:  # 'fit' mode (default)
-                    # Calculate thumbnail size that fits within display
                     img.thumbnail((EPD_WIDTH, EPD_HEIGHT), Image.Resampling.LANCZOS)
                     print(f"   Thumbnail size: {img.size}")
                     
-                    # Create exact size image with white background
                     resized_img = Image.new('RGB', (EPD_WIDTH, EPD_HEIGHT), 'white')
-                    
-                    # Center the image
                     x = (EPD_WIDTH - img.width) // 2
                     y = (EPD_HEIGHT - img.height) // 2
                     resized_img.paste(img, (x, y))
                     print(f"   Centered at: ({x}, {y})")
                 
-                # Verify final size is exactly correct
                 if resized_img.size != (EPD_WIDTH, EPD_HEIGHT):
                     print(f"❌ Size error! Got {resized_img.size}, expected ({EPD_WIDTH}, {EPD_HEIGHT})")
                     return None
                 
                 print(f"✅ Final size: {resized_img.size}")
                 
-                # Save debug image if requested
                 if debug:
                     debug_path = f"debug_resized_{resize_mode}.png"
                     resized_img.save(debug_path)
                     print(f"   Debug image saved: {debug_path}")
                 
-                # Define E6 palette - more accurate colors
+                # Define E6 palette
                 e6_palette = [
                     (0x0, (0, 0, 0)),           # BLACK
                     (0x1, (255, 255, 255)),     # WHITE  
@@ -142,10 +128,15 @@ class EPaperImageSender:
                     (0x6, (0, 255, 0))          # GREEN
                 ]
                 
-                # Apply improved color quantization
-                quantized_img = self.quantize_to_e6_palette(resized_img, e6_palette, debug)
+                # Apply quantization based on dither mode
+                if dither_mode == 'fast':
+                    quantized_img = self.pil_dither_to_e6(resized_img, e6_palette, debug)
+                elif dither_mode == 'quality':
+                    quantized_img = self.floyd_steinberg_dither(resized_img, e6_palette, debug)
+                else:  # 'none'
+                    quantized_img = self.quantize_to_e6_palette(resized_img, e6_palette, debug)
                 
-                # Convert to E6 format with verification
+                # Convert to E6 format
                 raw_data = self.convert_to_e6_format(quantized_img, e6_palette)
                 
                 print(f"   Raw data size: {len(raw_data)} bytes")
@@ -155,7 +146,6 @@ class EPaperImageSender:
                     print(f"❌ Size mismatch! Expected {EPD_BUFFER_SIZE}, got {len(raw_data)}")
                     return None
                 
-                # Debug: show first few bytes
                 if debug:
                     print(f"   First 16 bytes: {' '.join(f'{b:02X}' for b in raw_data[:16])}")
                     print(f"   Last 16 bytes:  {' '.join(f'{b:02X}' for b in raw_data[-16:])}")
@@ -168,32 +158,155 @@ class EPaperImageSender:
             traceback.print_exc()
             return None
 
+    def pil_dither_to_e6(self, img, palette, debug=False):
+        """Use PIL's built-in dithering - FAST"""
+        print("   🚀 Applying PIL dithering (fast method)...")
+        
+        # Create a PIL palette image
+        palette_img = Image.new('P', (1, 1))
+        
+        # Flatten the palette for PIL format
+        pil_palette = []
+        for code, (r, g, b) in palette:
+            pil_palette.extend([r, g, b])
+        
+        # Pad palette to 256 colors (PIL requirement)
+        while len(pil_palette) < 768:  # 256 * 3
+            pil_palette.extend([0, 0, 0])
+        
+        palette_img.putpalette(pil_palette)
+        
+        # Apply dithering using PIL's built-in Floyd-Steinberg
+        print("      Converting and dithering...")
+        dithered = img.quantize(palette=palette_img, dither=Image.Dither.FLOYDSTEINBERG)
+        
+        # Convert back to RGB
+        quantized = dithered.convert('RGB')
+        
+        # Snap to exact palette colors (PIL might introduce variations)
+        width, height = quantized.size
+        pixels = quantized.load()
+        
+        for y in range(height):
+            for x in range(width):
+                rgb = pixels[x, y]
+                # Find closest exact match
+                min_dist = float('inf')
+                best_color = palette[0][1]
+                for code, target_rgb in palette:
+                    dist = sum((a - b) ** 2 for a, b in zip(rgb, target_rgb))
+                    if dist < min_dist:
+                        min_dist = dist
+                        best_color = target_rgb
+                pixels[x, y] = best_color
+        
+        # Count colors
+        color_counts = {color_code: 0 for color_code, _ in palette}
+        rgb_to_code = {rgb: code for code, rgb in palette}
+        
+        for y in range(height):
+            for x in range(width):
+                rgb = pixels[x, y]
+                code = rgb_to_code.get(rgb, 0x0)
+                color_counts[code] += 1
+        
+        # Print color distribution
+        total_pixels = width * height
+        print("   Color distribution (PIL dithering):")
+        color_names = {0x0: "BLACK", 0x1: "WHITE", 0x2: "YELLOW", 0x3: "RED", 0x5: "BLUE", 0x6: "GREEN"}
+        for code, count in color_counts.items():
+            percentage = (count / total_pixels) * 100
+            print(f"     {color_names.get(code, f'0x{code:X}')}: {count:6d} pixels ({percentage:5.1f}%)")
+        
+        if debug:
+            debug_path = f"debug_pil_dithered.png"
+            quantized.save(debug_path)
+            print(f"   PIL dithered debug image saved: {debug_path}")
+        
+        return quantized
+
+    def floyd_steinberg_dither(self, img, palette, debug=False):
+        """Custom Floyd-Steinberg implementation - slower but more control"""
+        print("   🎨 Applying custom Floyd-Steinberg dithering...")
+        
+        width, height = img.size
+        img_array = np.array(img, dtype=np.float64)
+        palette_colors = np.array([rgb for _, rgb in palette])
+        palette_codes = [code for code, _ in palette]
+        
+        result_array = np.zeros((height, width, 3), dtype=np.uint8)
+        color_counts = {color_code: 0 for color_code, _ in palette}
+        
+        print(f"      Processing {width}x{height} pixels...")
+        
+        for y in range(height):
+            if y % 100 == 0:
+                print(f"      Row {y}/{height} ({y*100//height}%)")
+            
+            for x in range(width):
+                old_pixel = img_array[y, x]
+                
+                # Find closest color
+                distances = np.sum((palette_colors - old_pixel) ** 2, axis=1)
+                best_idx = np.argmin(distances)
+                best_color = palette_colors[best_idx]
+                best_code = palette_codes[best_idx]
+                
+                result_array[y, x] = best_color
+                color_counts[best_code] += 1
+                
+                # Error diffusion
+                error = old_pixel - best_color
+                
+                if x + 1 < width:
+                    img_array[y, x + 1] += error * (7.0/16.0)
+                if y + 1 < height:
+                    if x > 0:
+                        img_array[y + 1, x - 1] += error * (3.0/16.0)
+                    img_array[y + 1, x] += error * (5.0/16.0)
+                    if x + 1 < width:
+                        img_array[y + 1, x + 1] += error * (1.0/16.0)
+                
+                img_array = np.clip(img_array, 0, 255)
+        
+        quantized = Image.fromarray(result_array, 'RGB')
+        
+        # Print color distribution
+        total_pixels = width * height
+        print("   Color distribution (custom dithering):")
+        color_names = {0x0: "BLACK", 0x1: "WHITE", 0x2: "YELLOW", 0x3: "RED", 0x5: "BLUE", 0x6: "GREEN"}
+        for code, count in color_counts.items():
+            percentage = (count / total_pixels) * 100
+            print(f"     {color_names.get(code, f'0x{code:X}')}: {count:6d} pixels ({percentage:5.1f}%)")
+        
+        if debug:
+            debug_path = f"debug_custom_dithered.png"
+            quantized.save(debug_path)
+            print(f"   Custom dithered debug image saved: {debug_path}")
+        
+        return quantized
+
     def quantize_to_e6_palette(self, img, palette, debug=False):
-        """Convert image to E6 palette using improved quantization"""
-        print("   Quantizing to E6 palette...")
+        """Simple nearest-color quantization - no dithering"""
+        print("   🎨 Quantizing to E6 palette (no dithering)...")
         
         width, height = img.size
         pixels = img.load()
         
-        # Create new image for quantized result
         quantized = Image.new('RGB', (width, height))
         quantized_pixels = quantized.load()
         
-        # Color statistics for debugging
         color_counts = {color_code: 0 for color_code, _ in palette}
         
-        # Process each pixel
         for y in range(height):
             for x in range(width):
                 r, g, b = pixels[x, y]
                 
-                # Find closest color in E6 palette
                 min_distance = float('inf')
-                best_color = palette[0][1]  # Default to black
+                best_color = palette[0][1]
                 best_code = palette[0][0]
                 
                 for color_code, rgb in palette:
-                    # Use weighted distance for better color matching
                     distance = (
                         0.299 * (r - rgb[0]) ** 2 +
                         0.587 * (g - rgb[1]) ** 2 +
@@ -210,13 +323,12 @@ class EPaperImageSender:
         
         # Print color distribution
         total_pixels = width * height
-        print("   Color distribution:")
+        print("   Color distribution (no dithering):")
         color_names = {0x0: "BLACK", 0x1: "WHITE", 0x2: "YELLOW", 0x3: "RED", 0x5: "BLUE", 0x6: "GREEN"}
         for code, count in color_counts.items():
             percentage = (count / total_pixels) * 100
             print(f"     {color_names.get(code, f'0x{code:X}')}: {count:6d} pixels ({percentage:5.1f}%)")
         
-        # Save debug image
         if debug:
             debug_path = f"debug_quantized.png"
             quantized.save(debug_path)
@@ -225,46 +337,39 @@ class EPaperImageSender:
         return quantized
 
     def convert_to_e6_format(self, img, palette):
-        """Convert quantized image to E6 4-bit format with exact ESP32 matching"""
+        """Convert quantized image to E6 4-bit format"""
         print("   Converting to E6 4-bit format...")
         
         width, height = img.size
         pixels = img.load()
         
-        # Verify dimensions
         if width != EPD_WIDTH or height != EPD_HEIGHT:
             raise ValueError(f"Image must be exactly {EPD_WIDTH}x{EPD_HEIGHT}, got {width}x{height}")
         
         raw_data = bytearray()
         
-        # Create RGB to color code mapping
         rgb_to_code = {}
         for color_code, rgb in palette:
             rgb_to_code[rgb] = color_code
         
-        # Process image row by row, exactly matching ESP32 expectations
         bytes_written = 0
         for y in range(height):
-            for x in range(0, width, 2):  # Process 2 pixels at a time
-                # Get first pixel
+            for x in range(0, width, 2):
                 r1, g1, b1 = pixels[x, y]
-                color1 = rgb_to_code.get((r1, g1, b1), 0x0)  # Default to black if not found
+                color1 = rgb_to_code.get((r1, g1, b1), 0x0)
                 
-                # Get second pixel (or white if at odd width edge)
                 if x + 1 < width:
                     r2, g2, b2 = pixels[x + 1, y]
-                    color2 = rgb_to_code.get((r2, g2, b2), 0x1)  # Default to white
+                    color2 = rgb_to_code.get((r2, g2, b2), 0x1)
                 else:
-                    color2 = 0x1  # WHITE for padding
+                    color2 = 0x1
                 
-                # Pack exactly as ESP32 expects: high nibble = first pixel, low nibble = second pixel
                 byte_value = (color1 << 4) | color2
                 raw_data.append(byte_value)
                 bytes_written += 1
         
         print(f"   Packed {bytes_written} bytes from {width}x{height} pixels")
         
-        # Verify exact buffer size
         expected_bytes = (EPD_WIDTH * EPD_HEIGHT) // 2
         if len(raw_data) != expected_bytes:
             raise ValueError(f"Buffer size mismatch: expected {expected_bytes}, got {len(raw_data)}")
@@ -272,67 +377,36 @@ class EPaperImageSender:
         return bytes(raw_data)
 
     def create_test_pattern(self):
-        """Create E6 test pattern exactly matching ESP32 implementation"""
+        """Create E6 test pattern"""
         print("📊 Creating E6 test pattern...")
         
         raw_data = bytearray()
-        
-        # E6 color definitions - exact match with ESP32
-        colors = [0x0, 0x1, 0x2, 0x3, 0x5, 0x6]  # BLACK, WHITE, YELLOW, RED, BLUE, GREEN
+        colors = [0x0, 0x1, 0x2, 0x3, 0x5, 0x6]
         
         for y in range(EPD_HEIGHT):
-            # Determine which color band (6 bands of 80 pixels each)
             color_index = min(y // 80, 5)
             color = colors[color_index]
             
-            for x in range(EPD_WIDTH // 2):  # 2 pixels per byte
-                # Pack 2 pixels of the same color - exact ESP32 format
+            for x in range(EPD_WIDTH // 2):
                 byte_value = (color << 4) | color
                 raw_data.append(byte_value)
         
         print(f"   Test pattern size: {len(raw_data)} bytes")
         return bytes(raw_data)
     
-    def create_simple_test_image(self):
-        """Create a simple test image to debug pixel mapping"""
-        print("📊 Creating simple test image...")
-        
-        # Create image with clear patterns
-        img = Image.new('RGB', (EPD_WIDTH, EPD_HEIGHT), 'white')
-        pixels = img.load()
-        
-        # Create vertical stripes of each color
-        stripe_width = EPD_WIDTH // 6
-        colors = [(0, 0, 0), (255, 255, 255), (255, 255, 0), (255, 0, 0), (0, 0, 255), (0, 255, 0)]
-        
-        for x in range(EPD_WIDTH):
-            color_index = min(x // stripe_width, 5)
-            color = colors[color_index]
-            for y in range(EPD_HEIGHT):
-                pixels[x, y] = color
-        
-        # Add horizontal lines every 50 pixels for alignment checking
-        for y in range(0, EPD_HEIGHT, 50):
-            for x in range(EPD_WIDTH):
-                pixels[x, y] = (0, 0, 0)  # Black lines
-        
-        return img
-    
     def send_image_data(self, image_data):
-        """Send raw image data to ESP32 using multipart form"""
+        """Send raw image data to ESP32"""
         try:
             print(f"📡 Sending image data to ESP32...")
             print(f"   Endpoint: {self.base_url}{API_ENDPOINT}")
             print(f"   Data size: {len(image_data)} bytes")
             
-            # Create multipart form with binary data
             files = {
                 'file': ('image.bin', image_data, 'application/octet-stream')
             }
             
             start_time = time.time()
             
-            # Send data
             response = requests.post(
                 f"{self.base_url}{API_ENDPOINT}",
                 files=files,
@@ -374,55 +448,31 @@ class EPaperImageSender:
         """Send E6 test pattern"""
         test_data = self.create_test_pattern()
         return self.send_image_data(test_data)
-    
-    def send_simple_test(self):
-        """Send simple test image for debugging"""
-        print("🧪 Creating and sending simple test image...")
-        test_img = self.create_simple_test_image()
-        
-        # Save for inspection
-        test_img.save("debug_simple_test.png")
-        print("   Test image saved as debug_simple_test.png")
-        
-        # Define E6 palette
-        e6_palette = [
-            (0x0, (0, 0, 0)),           # BLACK
-            (0x1, (255, 255, 255)),     # WHITE  
-            (0x2, (255, 255, 0)),       # YELLOW
-            (0x3, (255, 0, 0)),         # RED
-            (0x5, (0, 0, 255)),         # BLUE
-            (0x6, (0, 255, 0))          # GREEN
-        ]
-        
-        # Quantize and convert
-        quantized = self.quantize_to_e6_palette(test_img, e6_palette, debug=True)
-        raw_data = self.convert_to_e6_format(quantized, e6_palette)
-        
-        return self.send_image_data(raw_data)
 
 def main():
     parser = argparse.ArgumentParser(description='Send image to ESP32 E6 E-Paper display')
     parser.add_argument('--ip', default=DEFAULT_ESP32_IP, help='ESP32 IP address')
     parser.add_argument('--image', default=DEFAULT_IMAGE_PATH, help='Image file path')
     parser.add_argument('--test', action='store_true', help='Send test pattern instead of image')
-    parser.add_argument('--simple-test', action='store_true', help='Send simple test image for debugging')
     parser.add_argument('--resize', choices=['fit', 'fill', 'stretch'], default='fit',
-                       help='Resize mode: fit (maintain ratio, may have borders), fill (crop to fill), stretch (may distort)')
+                       help='Resize mode: fit (maintain ratio), fill (crop to fill), stretch (may distort)')
+    parser.add_argument('--dither', choices=['fast', 'quality', 'none'], default='none',
+                       help='Dithering method: fast (PIL), quality (Floyd-Steinberg), none (nearest color)')
     parser.add_argument('--debug', action='store_true', help='Save debug images and show detailed output')
     
     args = parser.parse_args()
     
     print("=" * 60)
     print("🖼️  ESP32 E6 E-Paper Image Sender")
+    if args.dither != 'none':
+        print(f"🎨 With {args.dither.upper()} dithering")
     print("=" * 60)
     print(f"Display: 7.3\" E6 Spectra 6-color ({EPD_WIDTH}x{EPD_HEIGHT})")
     print(f"Buffer size: {EPD_BUFFER_SIZE} bytes")
     print()
     
-    # Create sender instance
     sender = EPaperImageSender(args.ip)
     
-    # Check connection
     if not sender.check_connection():
         print("\n💡 Troubleshooting tips:")
         print("   1. Make sure ESP32 is powered on and connected to WiFi")
@@ -434,19 +484,11 @@ def main():
     success = False
     
     if args.test:
-        # Send test pattern
         print(f"\n🧪 Sending E6 test pattern...")
         success = sender.send_test_pattern()
-        
-    elif args.simple_test:
-        # Send simple test image
-        print(f"\n🧪 Sending simple test image...")
-        success = sender.send_simple_test()
-        
     else:
-        # Process and send image
         print(f"\n🖼️  Processing image: {args.image}")
-        image_data = sender.convert_image_for_epaper(args.image, args.resize, args.debug)
+        image_data = sender.convert_image_for_epaper(args.image, args.resize, args.dither, args.debug)
         if image_data:
             success = sender.send_image_data(image_data)
         else:
@@ -456,13 +498,13 @@ def main():
     print("\n" + "=" * 60)
     if success:
         print("🎉 Image sent successfully!")
+        if args.dither != 'none':
+            print("   Dithering should improve image quality on the display")
         print("   The E6 display should update shortly...")
-        print("   Check the ESP32 serial output for details")
         if args.debug:
             print("   Debug images saved in current directory")
     else:
         print("❌ Failed to send image")
-        print("   Check ESP32 serial output for error details")
     print("=" * 60)
 
 if __name__ == "__main__":
