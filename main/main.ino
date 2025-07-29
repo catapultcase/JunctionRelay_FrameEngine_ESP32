@@ -58,34 +58,32 @@ void epd_send_data(unsigned char data) {
   epd_spi_transfer(data);
 }
 
-void epd_read_busy_h(void) {
-  Serial.print("⏳ Checking BUSY pin...");
+// === CADRE-STYLE BUSY HANDLING ===
+void epd_busy_wait(float timeout_seconds) {
+  unsigned long timeout_ms = (unsigned long)(timeout_seconds * 1000);
+  
+  // If BUSY is already high, just wait the full timeout (Cadre approach)
+  if (epd_digital_read(EPD_BUSY) == HIGH) {
+    Serial.printf("⏳ BUSY already high, waiting %.1fs...\n", timeout_seconds);
+    delay(timeout_ms);
+    return;
+  }
+  
+  // Otherwise, poll until BUSY goes high or timeout
+  Serial.printf("⏳ Waiting for BUSY (timeout: %.1fs)...", timeout_seconds);
   unsigned long start_time = millis();
-  unsigned long timeout = 5000; // Much shorter 5 second timeout
   
   while (epd_digital_read(EPD_BUSY) == LOW) {
-    epd_delay_ms(10);
-    if (millis() - start_time > timeout) {
-      Serial.println(" TIMEOUT (continuing)");
-      return; // Just continue, don't wait forever
+    delay(10);  // 10ms polling interval like Cadre
+    if (millis() - start_time >= timeout_ms) {
+      float elapsed = (millis() - start_time) / 1000.0;
+      Serial.printf(" TIMEOUT after %.1fs (continuing)\n", elapsed);
+      return;
     }
   }
-  Serial.println(" OK");
-}
-
-void epd_read_busy_l(void) {
-  Serial.print("⏳ Checking BUSY pin...");
-  unsigned long start_time = millis();
-  unsigned long timeout = 5000; // Much shorter 5 second timeout
   
-  while (epd_digital_read(EPD_BUSY) == HIGH) {
-    epd_delay_ms(10);
-    if (millis() - start_time > timeout) {
-      Serial.println(" TIMEOUT (continuing)");
-      return; // Just continue, don't wait forever
-    }
-  }
-  Serial.println(" OK");
+  float elapsed = (millis() - start_time) / 1000.0;
+  Serial.printf(" OK (%.1fs)\n", elapsed);
 }
 
 void epd_reset(void) {
@@ -95,18 +93,6 @@ void epd_reset(void) {
   epd_delay_ms(2);
   epd_digital_write(EPD_RST, HIGH);
   epd_delay_ms(20);
-}
-
-void epd_turn_on_display(void) {
-  Serial.println("📺 Turning on display...");
-  epd_send_command(0x12); // DISPLAY_REFRESH
-  epd_send_data(0x01);
-  Serial.println("⏳ Display refresh initiated (non-blocking)");
-  // Don't wait - let the display update in background
-
-  epd_send_command(0x02); // POWER_OFF
-  epd_send_data(0x00);
-  Serial.println("🔌 Display commands sent");
 }
 
 int epd_if_init(void) {
@@ -221,19 +207,34 @@ void epd_send_init_sequence() {
 int epd_init(void) {
   if (epd_if_init() != 0) return -1;
   epd_reset();
-  epd_read_busy_h();
+  epd_busy_wait(0.1);  // Short wait after reset
   epd_delay_ms(30);
   epd_send_init_sequence();
   return 0;
 }
 
+// === CADRE-STYLE DISPLAY UPDATE SEQUENCE ===
+void epd_turn_on_display(void) {
+  Serial.println("📺 Starting display update sequence...");
+  
+  epd_send_command(0x04); // Power ON  
+  epd_busy_wait(0.4);     // Short wait for power on (Cadre: 0.4s)
+  
+  epd_send_command(0x12); // DISPLAY_REFRESH
+  epd_send_data(0x01);
+  epd_busy_wait(45.0);    // Long wait for display refresh (Cadre: 45.0s)
+
+  epd_send_command(0x02); // POWER_OFF
+  epd_send_data(0x00);
+  epd_busy_wait(0.4);     // Short wait for power off (Cadre: 0.4s)
+  
+  Serial.println("✅ Display update sequence complete");
+}
+
 // Clear display to a single color
 void epd_clear(unsigned char color) {
-  unsigned int W = (EPD_WIDTH + 1) / 2;
+  unsigned int W = (EPD_WIDTH + 1) / 2;  // CORRECTED BUFFER WIDTH
   unsigned int H = EPD_HEIGHT;
-  
-  epd_send_command(0x04);  // Power ON
-  epd_read_busy_h();
   
   epd_send_command(0x10);  // Data Start Transmission
   for (unsigned int j = 0; j < H; j++) {
@@ -241,6 +242,75 @@ void epd_clear(unsigned char color) {
       epd_send_data((color<<6)|(color<<4)|(color<<2)|color);
     }
   }
+  epd_turn_on_display();
+}
+
+// CRITICAL: Color correction function based on Cadre project findings
+uint8_t epd_correct_color(uint8_t color) {
+  // Clamp color to valid range (0-5)
+  if (color > 5) color = 5;
+  
+  // Skip unused index 4: colors 4&5 become 5&6
+  if (color >= 4) color += 1;
+  
+  return color;
+}
+
+// Display raw buffer (4-bit pixels) - WITH COLOR CORRECTION
+void epd_display(unsigned char *image) {
+  unsigned int W = (EPD_WIDTH + 1) / 2;  // CORRECTED BUFFER WIDTH
+  unsigned int H = EPD_HEIGHT;
+  
+  Serial.println("📤 Sending image data to display...");
+  epd_send_command(0x10);  // Data Start Transmission
+  for (unsigned int j = 0; j < H; j++) {
+    for (unsigned int i = 0; i < W; i++) {
+      // Extract and correct both pixels in the byte
+      uint8_t byte_val = image[i + j * W];
+      uint8_t pixel1 = epd_correct_color((byte_val >> 4) & 0x0F);
+      uint8_t pixel2 = epd_correct_color(byte_val & 0x0F);
+      epd_send_data((pixel1 << 4) | pixel2);
+    }
+  }
+  Serial.println("✅ Image data sent, starting display update...");
+  epd_turn_on_display();
+}
+
+void epd_sleep(void) {
+  epd_send_command(0x02);  // Power OFF
+  epd_send_data(0x00);
+  epd_send_command(0x07);  // Deep Sleep
+  epd_send_data(0xA5);
+}
+
+// CORRECTED test pattern - should show distinct color bands
+void showTestPattern() {
+  if (!displayInitialized) return;
+  
+  unsigned int W = (EPD_WIDTH + 1) / 2;  // CORRECTED BUFFER WIDTH
+  unsigned int H = EPD_HEIGHT;
+  
+  Serial.println("🎨 Generating test pattern...");
+  epd_send_command(0x10);  // Data Start Transmission
+  
+  for (unsigned int y = 0; y < H; y++) {
+    uint8_t band = y / 80;  // 6 bands of 80 pixels each
+    uint8_t pixel = 0;
+    
+    switch (band) {
+      case 0: pixel = (EPD_BLACK<<4)|EPD_BLACK; break;     // Black band
+      case 1: pixel = (EPD_WHITE<<4)|EPD_WHITE; break;     // White band  
+      case 2: pixel = (EPD_YELLOW<<4)|EPD_YELLOW; break;   // Yellow band
+      case 3: pixel = (EPD_RED<<4)|EPD_RED; break;         // Red band
+      case 4: pixel = (EPD_BLUE<<4)|EPD_BLUE; break;       // Blue band
+      default: pixel = (EPD_GREEN<<4)|EPD_GREEN; break;    // Green band
+    }
+    
+    for (unsigned int x = 0; x < W; x++) {
+      epd_send_data(pixel);
+    }
+  }
+  Serial.println("✅ Test pattern data sent, starting display update...");
   epd_turn_on_display();
 }
 
@@ -319,6 +389,7 @@ void handleClear() {
     server.send(500, "application/json", "{\"error\":\"Display not initialized\"}");
     return;
   }
+  Serial.println("🧹 Clearing display to white...");
   epd_clear(EPD_WHITE);
   server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Display cleared\"}");
 }
@@ -327,82 +398,10 @@ void handleTest() {
   if (!displayInitialized) {
     server.send(500, "application/json", "{\"error\":\"Display not ready\"}");
   } else {
+    Serial.println("🧪 Showing test pattern...");
     showTestPattern();
     server.send(200, "application/json", "{\"status\":\"success\",\"message\":\"Test pattern displayed\"}");
   }
-}
-
-// CRITICAL: Color correction function based on Cadre project findings
-uint8_t epd_correct_color(uint8_t color) {
-  // Clamp color to valid range (0-5)
-  if (color > 5) color = 5;
-  
-  // Skip unused index 4: colors 4&5 become 5&6
-  if (color >= 4) color += 1;
-  
-  return color;
-}
-
-// Display raw buffer (4-bit pixels) - WITH COLOR CORRECTION
-void epd_display(unsigned char *image) {
-  unsigned int W = (EPD_WIDTH + 1) / 2;
-  unsigned int H = EPD_HEIGHT;
-  
-  epd_send_command(0x04);  // Power ON
-  epd_read_busy_h();  // Quick check only
-  
-  Serial.println("📤 Sending image data to display...");
-  epd_send_command(0x10);  // Data Start Transmission
-  for (unsigned int j = 0; j < H; j++) {
-    for (unsigned int i = 0; i < W; i++) {
-      // Extract and correct both pixels in the byte
-      uint8_t byte_val = image[i + j * W];
-      uint8_t pixel1 = epd_correct_color((byte_val >> 4) & 0x0F);
-      uint8_t pixel2 = epd_correct_color(byte_val & 0x0F);
-      epd_send_data((pixel1 << 4) | pixel2);
-    }
-  }
-  Serial.println("✅ Image data sent, starting display update...");
-  epd_turn_on_display();
-}
-
-void epd_sleep(void) {
-  epd_send_command(0x02);  // Power OFF
-  epd_send_data(0x00);
-  epd_send_command(0x07);  // Deep Sleep
-  epd_send_data(0xA5);
-}
-
-// CORRECTED test pattern - should show distinct color bands
-void showTestPattern() {
-  if (!displayInitialized) return;
-  
-  unsigned int W = (EPD_WIDTH + 1) / 2;
-  unsigned int H = EPD_HEIGHT;
-  
-  epd_send_command(0x04);  // Power ON
-  epd_read_busy_h();
-  
-  epd_send_command(0x10);  // Data Start Transmission
-  
-  for (unsigned int y = 0; y < H; y++) {
-    uint8_t band = y / 80;  // 6 bands of 80 pixels each
-    uint8_t pixel = 0;
-    
-    switch (band) {
-      case 0: pixel = (EPD_BLACK<<4)|EPD_BLACK; break;     // Black band
-      case 1: pixel = (EPD_WHITE<<4)|EPD_WHITE; break;     // White band  
-      case 2: pixel = (EPD_YELLOW<<4)|EPD_YELLOW; break;   // Yellow band
-      case 3: pixel = (EPD_RED<<4)|EPD_RED; break;         // Red band
-      case 4: pixel = (EPD_BLUE<<4)|EPD_BLUE; break;       // Blue band
-      default: pixel = (EPD_GREEN<<4)|EPD_GREEN; break;    // Green band
-    }
-    
-    for (unsigned int x = 0; x < W; x++) {
-      epd_send_data(pixel);
-    }
-  }
-  epd_turn_on_display();
 }
 
 // === Application Layer ===
@@ -421,9 +420,8 @@ void setup() {
     Serial.println("❌ Display init failed");
     return;
   }
-  
-  Serial.println("🌐 Starting WiFi connection...");
 
+  Serial.println("🌐 Starting WiFi connection...");
   // Connect WiFi
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
   while (WiFi.status() != WL_CONNECTED) {
